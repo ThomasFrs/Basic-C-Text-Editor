@@ -12,12 +12,25 @@
 
 /*** defines ***/
 
+#define SEX_VERSION "0.0.1"
+
 #define CTRL_KEY(k) ((k)&0x1f)
+
+enum editorKey
+{
+  ARROW_LEFT = 1000,
+  ARROW_RIGHT,
+  ARROW_UP,
+  ARROW_DOWN,
+  PAGE_UP,
+  PAGE_DOWN
+};
 
 /*** data ***/
 
 struct editorConfig
 {
+  int cx, cy; // to keep track of the cursor's position
   int screenrows;
   int screencols;
   struct termios orig_termios; // global var term width and height
@@ -30,6 +43,9 @@ struct editorConfig E;
 // error handling
 void die(const char *s) // prints error message and exits program
 {
+  write(STDOUT_FILENO, "\x1b[2J", 4);
+  write(STDOUT_FILENO, "\x1b[H", 3);
+
   perror(s);
   exit(1); // exit w/ status of 1 (aka failure w/ any non-zero value)
 }
@@ -48,7 +64,6 @@ void enableRawMode()
 
   struct termios raw = E.orig_termios; // make copy of orig_termios before making change
 
-  tcgetattr(STDIN_FILENO, &raw);                            // read current arg into a struct
   raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON); // | disables ctrl+m | | | disables ctrl+s and ctrl+q
   raw.c_oflag &= ~(OPOST);                                  // turns off output processing (\n to \r\n)
   raw.c_cflag |= (CS8);
@@ -61,7 +76,7 @@ void enableRawMode()
     die("tcsetattr");
 }
 
-char editorReadKey()
+int editorReadKey()
 {
   int nread;
   char c;
@@ -70,7 +85,53 @@ char editorReadKey()
     if (nread == -1 && errno != EAGAIN)
       die("read");
   }
-  return c;
+
+  if (c == '\x1b')
+  {
+    char seq[3];
+
+    if (read(STDIN_FILENO, &seq[0], 1) != 1)
+      return '\x1b';
+    if (read(STDIN_FILENO, &seq[1], 1) != 1)
+      return '\x1b';
+
+    if (seq[0] == '[') // for the arrow keys
+    {
+      if (seq[1] >= '0' && seq[1] <= '9')
+      {
+        if (read(STDIN_FILENO, &seq[2], 1) != 1)
+          return '\x1b';
+        if (seq[2] == '~')
+        {
+          switch (seq[1])
+          {
+          case '5':
+            return PAGE_UP;
+          case '6':
+            return PAGE_DOWN;
+          }
+        }
+      }
+      else
+      {
+        switch (seq[1])
+        {
+        case 'A':
+          return ARROW_UP;
+        case 'B':
+          return ARROW_DOWN;
+        case 'C':
+          return ARROW_RIGHT;
+        case 'D':
+          return ARROW_LEFT;
+        }
+      }
+    }
+
+    return '\x1b';
+  }
+  else
+    return c;
 }
 
 int getCursorPosition(int *rows, int *cols)
@@ -166,7 +227,27 @@ void editorDrawRows(struct abuf *ab)
   int y;
   for (y = 0; y < E.screenrows; y++)
   {
-    abAppend(ab, "~", 1);
+    if (y == E.screenrows / 3) // displays welcome message
+    {
+      char welcome[80];
+      int welcomelen = snprintf(welcome, sizeof(welcome),
+                                "Simplified Editor Extended -- version %s",
+                                SEX_VERSION);
+      if (welcomelen > E.screencols)
+        welcomelen = E.screencols;
+      int padding = (E.screencols - welcomelen) / 2; // space betwe
+      if (padding)
+      {
+        abAppend(ab, "~", 1);
+        padding--;
+      }
+
+      while (padding--)
+        abAppend(ab, " ", 1);
+      abAppend(ab, welcome, welcomelen);
+    }
+    else
+      abAppend(ab, "~", 1);
 
     abAppend(ab, "\x1b[K", 3); // clears each line as we redraw them
     // only if not the last line of the file
@@ -184,8 +265,11 @@ void editorRefreshScreen()
 
   editorDrawRows(&ab);
 
-  abAppend(&ab, "\x1b[H", 3);
-  abAppend(&ab, "\x1b[?25l", 6); // show cursor after drawing
+  char buf[32];
+  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1); // term uses 1-indexed values
+  abAppend(&ab, buf, strlen(buf));                               // strlen is exact pos wanted for cursor
+
+  abAppend(&ab, "\x1b[?25h", 6); // show cursor after drawing
 
   write(STDOUT_FILENO, ab.b, ab.len); // writes the buffer's content
   abFree(&ab);                        // frees the memory used by abuf
@@ -193,9 +277,32 @@ void editorRefreshScreen()
 
 /*** input ***/
 
+void editorMoveCursor(int key)
+{
+  switch (key)
+  {
+  case ARROW_LEFT:
+    if (E.cx != 0) // not to go past edges
+      E.cx--;
+    break;
+  case ARROW_RIGHT:
+    if (E.cx != E.screencols - 1)
+      E.cx++;
+    break;
+  case ARROW_UP:
+    if (E.cy != 0)
+      E.cy--;
+    break;
+  case ARROW_DOWN:
+    if (E.cy != E.screenrows - 1)
+      E.cy++;
+    break;
+  }
+}
+
 void editorProcessKeypress() // waits for keypress then returns it
 {
-  char c = editorReadKey();
+  int c = editorReadKey();
 
   switch (c)
   {
@@ -205,6 +312,12 @@ void editorProcessKeypress() // waits for keypress then returns it
     write(STDOUT_FILENO, "\x1b[H", 3);
     exit(0);
     break;
+  case ARROW_UP:
+  case ARROW_DOWN:
+  case ARROW_LEFT:
+  case ARROW_RIGHT:
+    editorMoveCursor(c);
+    break;
   }
 }
 
@@ -212,6 +325,9 @@ void editorProcessKeypress() // waits for keypress then returns it
 
 void initEditor()
 {
+  E.cx = 0;
+  E.cy = 0;
+
   if (getWindowSize(&E.screenrows, &E.screencols) == -1)
     die("getWindowSize");
 }
