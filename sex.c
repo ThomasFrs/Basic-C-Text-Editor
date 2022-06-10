@@ -130,11 +130,11 @@ char *editorPrompt(char *prompt, void (*callback)(char *, int));
 
 void die(const char *s)
 {
-  write(STDOUT_FILENO, "\x1b[2J", 4);
+  write(STDOUT_FILENO, "\x1b[2J", 4); // writes 4 bytes of arg[1] buffer to arg[0] file
   write(STDOUT_FILENO, "\x1b[H", 3);
 
-  perror(s);
-  exit(1);
+  perror(s); // prints out error name
+  exit(1);   // indicates unsuccesful termination, non-portable
 }
 
 void disableRawMode()
@@ -145,19 +145,24 @@ void disableRawMode()
 
 void enableRawMode()
 {
-  if (tcgetattr(STDIN_FILENO, &E.orig_termios) == -1)
-    die("tcgetattr");
-  atexit(disableRawMode);
+  if (tcgetattr(STDIN_FILENO, &E.orig_termios) == -1) // gets param associated with terminal and stores them in termios structure
+    die("tcgetattr");                                 // returns error message 'tcgetattr'
+  atexit(disableRawMode);                             // called when the program ends
 
-  struct termios raw = E.orig_termios;
-  raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+  struct termios raw = E.orig_termios; // resets the raw termios
+  // input mode
+  raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON); // bitwise AND and bitwise NOT testing the matching octal values of ctrl keys
+  // output mode
   raw.c_oflag &= ~(OPOST);
-  raw.c_cflag |= (CS8);
+  // control mode
+  raw.c_cflag |= (CS8); // bitwise inclusive (only OR, doesn't work if both values are True =/= inclusive) OR
+  // local mode
   raw.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
-  raw.c_cc[VMIN] = 0;
-  raw.c_cc[VTIME] = 1;
+  // control characters in non-canonical mode (returns input char 'as typed' to the application program)
+  raw.c_cc[VMIN] = 0;  // min nb of bytes available in input queue in order for read to return
+  raw.c_cc[VTIME] = 1; // how to long to wait for input before returning, in units of 0.1 seconds
 
-  if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1)
+  if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) // sets value of param associated w/ terminal to termios structure
     die("tcsetattr");
 }
 
@@ -165,15 +170,16 @@ int editorReadKey()
 {
   int nread;
   char c;
-  while ((nread = read(STDIN_FILENO, &c, 1)) != 1)
+  // tests if no error in c buffer
+  while ((nread = read(STDIN_FILENO, &c, 1)) != 1) // returns 1 if a byte is read, 0 if EOF
   {
-    if (nread == -1 && errno != EAGAIN)
+    if (nread == -1 && errno != EAGAIN) // if nread returns -1, it's an error, errno is set to indicate the error
       die("read");
   }
 
-  if (c == '\x1b')
+  if (c == '\x1b') // if character is the escape character
   {
-    char seq[3];
+    char seq[3]; // create seq string of 3 chars following the escape string
 
     if (read(STDIN_FILENO, &seq[0], 1) != 1)
       return '\x1b';
@@ -182,13 +188,13 @@ int editorReadKey()
 
     if (seq[0] == '[')
     {
-      if (seq[1] >= '0' && seq[1] <= '9')
+      if (seq[1] >= '0' && seq[1] <= '9') // if seq[1] is a decimal number
       {
-        if (read(STDIN_FILENO, &seq[2], 1) != 1)
+        if (read(STDIN_FILENO, &seq[2], 1) != 1) // seq[2] does not exist
           return '\x1b';
-        if (seq[2] == '~')
+        if (seq[2] == '~') // special sequence ending with '~'
         {
-          switch (seq[1])
+          switch (seq[1]) // identify each sequence based on the 2nd character
           {
           case '1':
             return HOME_KEY;
@@ -207,7 +213,7 @@ int editorReadKey()
           }
         }
       }
-      else
+      else // if seq[1] is not a decimal number (a letter then)
       {
         switch (seq[1])
         {
@@ -226,7 +232,7 @@ int editorReadKey()
         }
       }
     }
-    else if (seq[0] == 'O')
+    else if (seq[0] == 'O') // if control sequence
     {
       switch (seq[1])
       {
@@ -248,44 +254,44 @@ int editorReadKey()
 int getCursorPosition(int *rows, int *cols)
 {
   char buf[32];
-  unsigned int i = 0;
+  unsigned int i = 0; // can only store positive int
 
-  if (write(STDOUT_FILENO, "\x1b[6n", 4) != 4)
+  if (write(STDOUT_FILENO, "\x1b[6n", 4) != 4) // if number of byte differs
     return -1;
 
-  while (i < sizeof(buf) - 1)
+  while (i < sizeof(buf) - 1) // iterates through every element of buf string
   {
-    if (read(STDIN_FILENO, &buf[i], 1) != 1)
+    if (read(STDIN_FILENO, &buf[i], 1) != 1) // if reached end of string
       break;
     if (buf[i] == 'R')
       break;
     i++;
   }
-  buf[i] = '\0';
+  buf[i] = '\0'; // set last character to NULL
 
-  if (buf[0] != '\x1b' || buf[1] != '[')
+  if (buf[0] != '\x1b' || buf[1] != '[') // on escape sequence
     return -1;
-  if (sscanf(&buf[2], "%d;%d", rows, cols) != 2)
+  if (sscanf(&buf[2], "%d;%d", rows, cols) != 2) // on bytes written return error
     return -1;
 
-  return 0;
+  return 0; // no error in cursor position
 }
 
 int getWindowSize(int *rows, int *cols)
 {
   struct winsize ws;
 
-  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0)
+  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) // if error in fildes or no column
   {
-    if (write(STDOUT_FILENO, "\x1b[999C\x1b[999B", 12) != 12)
+    if (write(STDOUT_FILENO, "\x1b[999C\x1b[999B", 12) != 12) // if number of bytes returned by write() is different than desired (12)
       return -1;
     return getCursorPosition(rows, cols);
   }
   else
   {
-    *cols = ws.ws_col;
-    *rows = ws.ws_row;
-    return 0;
+    *cols = ws.ws_col; // changes value of cols
+    *rows = ws.ws_row; // changes value of rows
+    return 0;          // must return something
   }
 }
 
@@ -1276,31 +1282,31 @@ void editorProcessKeypress()
 
 void initEditor()
 {
-  E.cx = 0;
-  E.cy = 0;
-  E.rx = 0;
+  E.cx = 0; // cursor x position
+  E.cy = 0; // cursor y position
+  E.rx = 0; // row x position
   E.rowoff = 0;
   E.coloff = 0;
-  E.numrows = 0;
-  E.row = NULL;
-  E.dirty = 0;
+  E.numrows = 0; // nb of rows in file
+  E.row = NULL;  // current row
+  E.dirty = 0;   // bool if row has been modified
   E.filename = NULL;
-  E.statusmsg[0] = '\0';
-  E.statusmsg_time = 0;
+  E.statusmsg[0] = '\0'; // message of message bar
+  E.statusmsg_time = 0;  // time after displaying status message
   E.syntax = NULL;
 
-  if (getWindowSize(&E.screenrows, &E.screencols) == -1)
+  if (getWindowSize(&E.screenrows, &E.screencols) == -1) // if error
     die("getWindowSize");
-  E.screenrows -= 2;
+  E.screenrows -= 2; // bottom rows for status bar
 }
 
-int main(int argc, char *argv[])
+int main(int argc, char *argv[]) // parameters when calling the program and the file to open
 {
   enableRawMode();
   initEditor();
-  if (argc >= 2)
+  if (argc >= 2) // if the program is called with a file to open
   {
-    editorOpen(argv[1]);
+    editorOpen(argv[1]); // opens the address of the file in the parameters
   }
 
   editorSetStatusMessage(
